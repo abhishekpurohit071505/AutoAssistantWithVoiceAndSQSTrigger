@@ -3,6 +3,8 @@ import openai
 import boto3
 import json
 import os
+import time
+import uuid
 from io import BytesIO
 from openai import OpenAI
 
@@ -11,7 +13,10 @@ openai.api_key = st.secrets["OPENAI_API_KEY"]
 
 # SQS configuration
 sqs = boto3.client("sqs", region_name="us-east-1")  # Replace with your AWS region
+dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+
 QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/341336709396/AutoAssistantWithVoice-SQSTriggertoLambda"  # Replace with your actual SQS URL
+TABLE_NAME = "AutoFixDiagnoses"
 
 st.set_page_config(page_title="AutoFix Assistant", layout="centered")
 st.title("🔧 AutoFix Assistant")
@@ -42,11 +47,43 @@ if st.button("🚀 Diagnose"):
     else:
         with st.spinner("Sending your request to our diagnosis queue..."):
             try:
-                message = {"query": final_input}
+                request_id = str(uuid.uuid4())
+                message = {"query": final_input,"id": request_id }
                 sqs.send_message(
                     QueueUrl=QUEUE_URL,
                     MessageBody=json.dumps(message)
                 )
                 st.success("✅ Your issue has been submitted to our diagnosis queue. You will be notified once processing is complete.")
+                
+                # Poll DynamoDB for the result
+                table = dynamodb.Table(TABLE_NAME)
+                result = None
+                max_retries = 20
+                for _ in range(max_retries):
+                    response = table.get_item(Key={"id": request_id})
+                    if "Item" in response:
+                        result = response["Item"]
+                        break
+                    time.sleep(3)  # Wait before retrying
+
+                if result:
+                    st.markdown("### 🩺 Diagnosis Result:")
+                    st.markdown(f"**🔍 Problem:** {result.get('input', 'N/A')}")
+                    diagnosis = result.get("diagnosis", "")
+                    if "Reason:" in diagnosis:
+                        cause = diagnosis.split("Cause:", 1)[1].split("Reason:")[0].strip()
+                        reason = diagnosis.split("Reason:", 1)[1].strip()
+                    else:
+                        cause, reason = diagnosis, ""
+                    st.markdown(f"**💥 Cause:** {cause}")
+                    st.markdown(f"**🧠 Reason:** {reason}")
+                    st.markdown("---")
+                    st.markdown(f"**🛠 Fix Guide:**\n\n{result.get('fix_guide', '')}", unsafe_allow_html=True)
+                else:
+                    st.warning("Diagnosis not yet available. Please try again later.")
+                
+                
+                
+                
             except Exception as e:
                 st.error(f"Error sending to queue: {e}")
